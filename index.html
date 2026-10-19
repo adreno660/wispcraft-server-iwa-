@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>In-Browser Wisp Server Console</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #121212;
+            color: #ffffff;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container {
+            background-color: #1e1e1e;
+            padding: 30px;
+            border-radius: 12px;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+            width: 100%;
+            max-width: 500px;
+        }
+        h1 { font-size: 22px; color: #4caf50; margin-bottom: 5px; text-align: center; }
+        .subtitle { font-size: 12px; color: #888; text-align: center; margin-bottom: 25px; }
+        .form-group { margin-bottom: 15px; }
+        label { display: block; margin-bottom: 5px; font-size: 14px; color: #bbb; }
+        input {
+            width: 100%;
+            padding: 10px;
+            background-color: #2a2a2a;
+            border: 1px solid #444;
+            border-radius: 6px;
+            color: #fff;
+            font-size: 16px;
+        }
+        input:focus { border-color: #4caf50; outline: none; }
+        .btn-group { display: flex; gap: 10px; margin-top: 15px; }
+        button {
+            flex: 1;
+            padding: 12px;
+            font-size: 15px;
+            font-weight: bold;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        #startBtn { background-color: #4caf50; color: white; }
+        #startBtn:hover { background-color: #45a049; }
+        #stopBtn { background-color: #f44336; color: white; opacity: 0.6; cursor: not-allowed; }
+        #stopBtn.active { opacity: 1; cursor: pointer; }
+        #stopBtn.active:hover { background-color: #da190b; }
+        .console-header { margin-top: 25px; font-size: 13px; color: #888; display: flex; justify-content: space-between; }
+        #statusBadge { color: #f44336; font-weight: bold; }
+        #logBox {
+            margin-top: 5px;
+            padding: 12px;
+            background-color: #050505;
+            border: 1px solid #333;
+            border-radius: 6px;
+            font-family: 'Courier New', Courier, monospace;
+            font-size: 12px;
+            height: 200px;
+            overflow-y: auto;
+            color: #00ff00;
+            white-space: pre-wrap;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <h1>Wisp Server Control Panel</h1>
+        <div class="subtitle">Direct Sockets In-Tab Proxy Utility</div>
+        
+        <div class="form-group">
+            <label for="localPort">Local Listening Port (for the external game)</label>
+            <input type="number" id="localPort" value="5001" min="1025" max="65535">
+        </div>
+
+        <div class="form-group">
+            <label for="targetIp">Target Java Minecraft Server IP</label>
+            <input type="text" id="targetIp" value="hypixel.net">
+        </div>
+
+        <div class="form-group">
+            <label for="targetPort">Target Java Port</label>
+            <input type="number" id="targetPort" value="25565">
+        </div>
+
+        <div class="btn-group">
+            <button id="startBtn">Start Server</button>
+            <button id="stopBtn" disabled>Stop Server</button>
+        </div>
+
+        <div class="console-header">
+            <span>Live Terminal Activity Logs:</span>
+            <span id="statusBadge">OFFLINE</span>
+        </div>
+        <div id="logBox">System ready. Configure parameters and click Start.</div>
+    </div>
+
+    <script>
+        const logBox = document.getElementById('logBox');
+        const statusBadge = document.getElementById('statusBadge');
+        const startBtn = document.getElementById('startBtn');
+        const stopBtn = document.getElementById('stopBtn');
+        
+        let serverSocket = null;
+        let isRunning = false;
+
+        function printLog(text) {
+            const time = new Date().toLocaleTimeString();
+            logBox.innerText += `\n[${time}] ${text}`;
+            logBox.scrollTop = logBox.scrollHeight;
+        }
+
+        startBtn.addEventListener('click', async () => {
+            const port = parseInt(document.getElementById('localPort').value);
+            const targetIp = document.getElementById('targetIp').value;
+            const targetPort = parseInt(document.getElementById('targetPort').value);
+
+            if (isRunning) return;
+
+            printLog(`Attempting to bind loopback interface...`);
+            
+            try {
+                if (typeof TCPServerSocket === 'undefined') {
+                    throw new Error("Direct Sockets API (TCPServerSocket) is missing. This file must execute inside your team's custom SWBN app shell.");
+                }
+
+                // Fire up the in-browser background server port listener
+                serverSocket = new TCPServerSocket('127.0.0.1', { localPort: port });
+                const openedConf = await serverSocket.opened;
+                
+                isRunning = true;
+                statusBadge.innerText = "ONLINE";
+                statusBadge.style.color = "#4caf50";
+                
+                printLog(`SUCCESS: Wisp Proxy listening locally at ${openedConf.localAddress}:${openedConf.localPort}`);
+                printLog(`👉 Point your external web-game connection configuration to: ws://127.0.0.1:${port}`);
+
+                // Toggle UI state changes
+                startBtn.style.opacity = "0.6";
+                startBtn.style.cursor = "not-allowed";
+                stopBtn.disabled = false;
+                stopBtn.classList.add('active');
+
+                // Enter asynchronous server daemon listening loop
+                runServerLoop(serverSocket, targetIp, targetPort);
+
+            } catch (err) {
+                printLog(`❌ CRITICAL BIND ERROR: ${err.message}`);
+            }
+        });
+
+        stopBtn.addEventListener('click', async () => {
+            if (!isRunning || !serverSocket) return;
+            
+            printLog("Shutting down local listening hooks...");
+            try {
+                await serverSocket.close();
+                printLog("Server stopped successfully.");
+            } catch (e) {
+                printLog(`Error during shutdown: ${e.message}`);
+            }
+
+            // Reset UI switches
+            isRunning = false;
+            statusBadge.innerText = "OFFLINE";
+            statusBadge.style.color = "#f44336";
+            startBtn.style.opacity = "1";
+            startBtn.style.cursor = "pointer";
+            stopBtn.disabled = true;
+            stopBtn.classList.remove('active');
+        });
+
+        async function runServerLoop(socketInstance, ip, port) {
+            const reader = socketInstance.readable.getReader();
+            try {
+                while (isRunning) {
+                    const { value: clientChannel, done } = await reader.read();
+                    if (done) break;
+
+                    printLog(`[Connection Alert] Inbound network link intercepted inside browser engine.`);
+                    pipeClientToMinecraft(clientChannel, ip, port);
+                }
+            } catch (err) {
+                if (isRunning) printLog(`Daemon read fault: ${err.message}`);
+            }
+        }
+
+        async function pipeClientToMinecraft(clientChannel, ip, port) {
+            const { readable: cReadable, writable: cWritable } = await clientChannel.opened;
+            const clientReader = cReadable.getReader();
+            const clientWriter = cWritable.getWriter();
+
+            try {
+                printLog(`Dialing outbound Direct Socket to target destination: ${ip}:${port}`);
+                
+                // Open real TCP pipe straight to the production Minecraft network layer
+                const minecraftSocket = new TCPSocket(ip, port);
+                const { readable: mReadable, writable: mWritable } = await minecraftSocket.opened;
+                
+                const mcReader = mReadable.getReader();
+                const mcWriter = mWritable.getWriter();
+                printLog(`✨ Bridge fully locked: External Browser Game <-> Tab Proxy <-> ${ip}:${port}`);
+
+                // Fork concurrent microtasks to handle bi-directional asynchronous data streams
+                streamData(clientReader, mcWriter);
+                streamData(mcReader, clientWriter);
+
+            } catch (err) {
+                printLog(`❌ Routing bridge connection failure: ${err.message}`);
+            }
+        }
+
+        async function streamData(streamReader, streamWriter) {
+            try {
+                while (isRunning) {
+                    const { value, done } = await streamReader.read();
+                    if (done) break;
+                    await streamWriter.write(value);
+                }
+            } catch (e) {
+                // Connection teardown or reset handled implicitly
+            }
+        }
+    </script>
+</body>
+</html>
